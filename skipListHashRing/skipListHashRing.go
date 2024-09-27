@@ -5,3 +5,6 @@
  */
 
 package redisHashRing
+
+type redisHashRing struct {
+}
