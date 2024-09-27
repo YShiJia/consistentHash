@@ -57,7 +57,7 @@ func (c *ConsistentHash) AddNode(ctx context.Context, nodeName string, weight in
 	}
 	//不允许重复添加数据
 	if replicas := nodes[nodeName]; replicas > 0 {
-		return NewError(ErrNodeAlreadyExistsCode, ErrNodeAlreadyExists)
+		return ErrNodeAlreadyExists
 	}
 
 	//需要映射的节点数量
@@ -129,8 +129,7 @@ func (c *ConsistentHash) RemoveNode(ctx context.Context, nodeName string) error 
 	for i := int64(1); i <= replicas; i++ {
 		virtualNodeID := getVirtualNodeID(nodeName, i)
 		virtualNodeScore := c.encryptor.Encrypt(virtualNodeID)
-		_, err := c.hashRing.RemoveVirtualNode(ctx, int64(virtualNodeScore), virtualNodeID)
-		if err != nil {
+		if err := c.hashRing.RemoveVirtualNode(ctx, int64(virtualNodeScore), virtualNodeID); err != nil {
 			return err
 		}
 	}

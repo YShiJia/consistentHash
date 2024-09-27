@@ -17,11 +17,15 @@ const (
 
 	ErrInvalidVirtualNodeIDCode = 40002
 	ErrInvalidVirtualNodeIDMsg  = "invalid virtual node id"
+
+	ErrVirtualNodeNotExistsCode = 40002
+	ErrVirtualNodeNotExistsMsg  = "virtual node not exists"
 )
 
-var ErrNodeAlreadyExists = errors.New(ErrNodeAlreadyExistsMsg)
-var ErrInvalidVirtualNodeID = errors.New(ErrInvalidVirtualNodeIDMsg)
+var ErrNodeAlreadyExists = newError(ErrNodeAlreadyExistsCode, errors.New(ErrNodeAlreadyExistsMsg))
+var ErrInvalidVirtualNodeID = newError(ErrInvalidVirtualNodeIDCode, errors.New(ErrInvalidVirtualNodeIDMsg))
+var ErrVirtualNodeNotExists = newError(ErrVirtualNodeNotExistsCode, errors.New(ErrVirtualNodeNotExistsMsg))
 
-func NewError(code int64, err error) error {
-	return fmt.Errorf("[err] code: %d msg :%w", code, err)
+func newError(code int64, err error) error {
+	return fmt.Errorf("[err] code: %d  err: %w", code, err)
 }

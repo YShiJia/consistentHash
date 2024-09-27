@@ -4,4 +4,4 @@
  * @date 2024-09-27 00:21:44
  */
 
-package redisHashRing
+package skipHashRing

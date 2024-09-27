@@ -4,7 +4,4 @@
  * @date 2024-09-27 00:20:27
  */
 
-package redisHashRing
-
-type redisHashRing struct {
-}
+package skipHashRing

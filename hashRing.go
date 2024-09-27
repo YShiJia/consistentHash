@@ -21,9 +21,9 @@ type HashRing interface {
 	AddVirtualNode(ctx context.Context, score int64, nodeID string) (version int64, err error)
 	// 删除score节点上的元素中数组的VirtualNode元素，不存在则直接返回
 	// 如果删除VirtualNode并且score下面仍然还有元素，需要保证score的VirtualNodeList首元素可用
-	RemoveVirtualNode(ctx context.Context, score int64, nodeID string) (version int64, err error)
+	RemoveVirtualNode(ctx context.Context, score int64, nodeID string) error
 	// 获取一个score节点上的数据，若score不存在对应数据，返回零值
-	GetVirtualNode(ctx context.Context, score int64) (nodeIDs HashNode, err error)
+	GetVirtualNode(ctx context.Context, score int64) (nodeIDs *HashScore, err error)
 
 	// 根据数据score，找到对应的节点，顺时针向下查找
 	FindDataToVirtualNode(ctx context.Context, dataScore int64) (virtualNodeID string, err error)
@@ -43,7 +43,13 @@ type HashRing interface {
 	SetVersion(ctx context.Context, version int64) (err error)
 }
 
-type HashNode struct {
-	VirtualNodeIDs []string `json:"virtual_node_ids"`
-	Version        int64    `json:"version"`
+type VirtualNode struct {
+	VirtualNodeID string
+	Version       int64
+}
+
+type HashScore struct {
+	Score        int64         `json:"score"`
+	VirtualNodes []VirtualNode `json:"virtual_nodes"`
+	//version      int64            `json:"version"` //所有节点中最新的版本号，供以后使用
 }
