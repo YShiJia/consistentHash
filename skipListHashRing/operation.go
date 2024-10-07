@@ -5,3 +5,9 @@
  */
 
 package skipHashRing
+
+type virtualNode struct {
+	score  int64
+	nodeID []string
+	next   []*virtualNode
+}

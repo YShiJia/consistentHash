@@ -86,7 +86,7 @@ func (r *RedisHashRing) AddVirtualNode(ctx context.Context, score int64, nodeID 
 	if err != nil {
 		return 0, err
 	}
-	r.version = max[int64](gocast.ToInt64(hashRingVersion), r.version)
+	r.version = max(gocast.ToInt64(hashRingVersion), r.version)
 
 	//TODO 后面想个办法解决一下数据溢出的问题，可以考虑使用英文进制，让字符串作为版本号
 	hashScore.VirtualNodes = append(hashScore.VirtualNodes, csHash.VirtualNode{

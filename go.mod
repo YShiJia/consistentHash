@@ -11,6 +11,7 @@ require (
 )
 
 require (
+	github.com/YShiJia/skip_table v0.0.0-20240922140610-31e0674cd920 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 )
