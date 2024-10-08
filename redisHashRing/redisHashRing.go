@@ -9,16 +9,12 @@ package redisHashRing
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"github.com/YShiJia/consistentHash"
 	"github.com/demdxx/gocast"
 	"github.com/xiaoxuxiansheng/redis_lock"
 )
 
 type RedisHashRing struct {
-	//哈希环版本，本地保存一份
-	version     int64
 	key         string
 	redisClient *Client
 }
@@ -30,7 +26,7 @@ func NewRedisHashRing(key string, redisClient *Client) *RedisHashRing {
 	}
 }
 
-// 锁key
+// lock key
 func (r *RedisHashRing) getLockKey() string {
 	return fmt.Sprintf("redis:consistent_hash:ring:lock:%s", r.key)
 }
@@ -40,154 +36,124 @@ func (r *RedisHashRing) getRingKey() string {
 	return fmt.Sprintf("redis:consistent_hash:ring:%s", r.key)
 }
 
-func (r *RedisHashRing) getTableVersionKey() string {
-	return fmt.Sprintf("redis:consistent_hash:ring:version:%s", r.key)
-}
-
+// string name
 func (r *RedisHashRing) getNodeReplicaKey() string {
 	return fmt.Sprintf("redis:consistent_hash:ring:node:replica:%s", r.key)
 }
 
+// nodeData name
+func (r *RedisHashRing) getNodeDataKey(nodeID string) string {
+	return fmt.Sprintf("redis:consistent_hash:ring:node:data:%s", nodeID)
+}
+
+// expireSecond 获取锁最大尝试时间
 func (r *RedisHashRing) Lock(ctx context.Context, expireSecond int64) error {
-	lock := redis_lock.NewRedisLock(r.getLockKey(), r.redisClient, redis_lock.WithExpireSeconds(expireSecond))
+	// 创建一个锁: 阻塞+最大读取时间
+	lock := redis_lock.NewRedisLock(r.getLockKey(), r.redisClient, redis_lock.WithBlock(), redis_lock.WithExpireSeconds(expireSecond))
 	return lock.Lock(ctx)
 }
 
 func (r *RedisHashRing) Unlock(ctx context.Context) error {
+	//取消锁
 	lock := redis_lock.NewRedisLock(r.getLockKey(), r.redisClient)
 	return lock.Unlock(ctx)
 }
 
-func (r *RedisHashRing) AddVirtualNode(ctx context.Context, score int64, nodeID string) (version int64, err error) {
-	hashScore, err := r.GetVirtualNode(ctx, score)
+func (r *RedisHashRing) AddVirtualNode(ctx context.Context, score int64, virtualNode string) error {
+	virtualNodes, err := r.GetVirtualNodes(ctx, score)
 	if err != nil {
-		//数据不存在
-		if errors.Is(err, csHash.ErrVirtualNodeNotExists) {
-			hashScore = &csHash.HashScore{
-				Score:        score,
-				VirtualNodes: make([]csHash.VirtualNode, 0),
-			}
-		} else {
-			return 0, err
-		}
+		return err
 	}
 	//如果数据已经存在，直接返回
-	for _, virtualNode := range hashScore.VirtualNodes {
-		if virtualNode.VirtualNodeID == nodeID {
-			return virtualNode.Version, nil
+	for _, vn := range virtualNodes {
+		if vn == virtualNode {
+			return nil
 		}
 	}
-
+	// 先删除原来的数据
 	if err = r.redisClient.ZRem(ctx, r.getRingKey(), score); err != nil {
-		return 0, fmt.Errorf("redis ring zrem failed, err: %w", err)
+		return fmt.Errorf("redis ring zrem failed, err: %w", err)
 	}
-
-	hashRingVersion, err := r.GetVersion(ctx)
-	if err != nil {
-		return 0, err
+	// 更新数据
+	virtualNodes = append(virtualNodes, virtualNode)
+	vnData, _ := json.Marshal(virtualNodes)
+	// 上传数据
+	if err := r.redisClient.ZAdd(ctx, r.getRingKey(), score, string(vnData)); err != nil {
+		return fmt.Errorf("redis ring zadd failed, err: %w", err)
 	}
-	r.version = max(gocast.ToInt64(hashRingVersion), r.version)
-
-	//TODO 后面想个办法解决一下数据溢出的问题，可以考虑使用英文进制，让字符串作为版本号
-	hashScore.VirtualNodes = append(hashScore.VirtualNodes, csHash.VirtualNode{
-		VirtualNodeID: nodeID,
-		Version:       r.version + 1,
-	})
-
-	hsnData, _ := json.Marshal(hashScore)
-	if err := r.redisClient.ZAdd(ctx, r.getRingKey(), score, string(hsnData)); err != nil {
-		return 0, fmt.Errorf("redis ring zadd failed, err: %w", err)
-	}
-	//本地记录版本+1
-	r.version++
-	//更新redis 版本
-	r.SetVersion(ctx, r.version)
-
-	return r.version, nil
+	return nil
 }
 
 func (r *RedisHashRing) RemoveVirtualNode(ctx context.Context, score int64, nodeID string) error {
-	hashScore, err := r.GetVirtualNode(ctx, score)
+	virtualNodes, err := r.GetVirtualNodes(ctx, score)
 	if err != nil {
-		//数据不存在
-		if errors.Is(err, csHash.ErrVirtualNodeNotExists) {
-			return nil
-		} else {
-			//真实报错
-			return err
+		return err
+	}
+	// 更新数据
+	for index := 1; index < len(virtualNodes); index++ {
+		if virtualNodes[index] == nodeID {
+			virtualNodes = append(virtualNodes[:index], virtualNodes[index+1:]...)
+			break
 		}
 	}
-	index := 0
-	for ; index < len(hashScore.VirtualNodes) && hashScore.VirtualNodes[index].VirtualNodeID != nodeID; index++ {
-	}
-	if index == len(hashScore.VirtualNodes) {
-		return nil
-	}
 
-	//TODO 后续优化一下删除流程，不能让数据有删除了，但是没有上传的情况出现
+	// 删除原来的数据
 	if err = r.redisClient.ZRem(ctx, r.getRingKey(), score); err != nil {
 		return fmt.Errorf("redis ring zrem failed, err: %w", err)
 	}
 
-	//只有一个节点，那就是需要删除的节点，后面无需更新数据
-	if len(hashScore.VirtualNodes) == 1 {
-		return nil
-	}
-	hashScore.VirtualNodes = append(hashScore.VirtualNodes[:index], hashScore.VirtualNodes[index+1:]...)
-
-	hsnData, _ := json.Marshal(hashScore)
-	return r.redisClient.ZAdd(ctx, r.getRingKey(), score, string(hsnData))
+	vnData, _ := json.Marshal(virtualNodes)
+	return r.redisClient.ZAdd(ctx, r.getRingKey(), score, string(vnData))
 }
 
-func (r *RedisHashRing) GetVirtualNode(ctx context.Context, score int64) (hashScore *csHash.HashScore, err error) {
+func (r *RedisHashRing) GetVirtualNodes(ctx context.Context, score int64) ([]string, error) {
 	scoreEntities, err := r.redisClient.ZRangeByScore(ctx, r.getRingKey(), score, score)
 	if err != nil {
 		return nil, err
 	}
 	if len(scoreEntities) != 1 {
-		//不存在数据，直接返回
 		if len(scoreEntities) == 0 {
-			return nil, csHash.ErrVirtualNodeNotExists
+			//不存在数据，直接返回
+			return []string{}, nil
 		}
 		return nil, fmt.Errorf("invalid entity len: %d", len(scoreEntities))
 	}
 
-	hs := csHash.HashScore{}
-	if err = json.Unmarshal([]byte(scoreEntities[0].Val), &hs); err != nil {
+	var virtualNodes []string
+	if err = json.Unmarshal([]byte(scoreEntities[0].Val), &virtualNodes); err != nil {
 		return nil, err
 	}
-	return &hs, nil
+	return virtualNodes, nil
 }
 
-func (r *RedisHashRing) FindDataToVirtualNode(ctx context.Context, dataScore int64) (virtualNodeID string, err error) {
+func (r *RedisHashRing) FindDataToVirtualNode(ctx context.Context, dataScore int64) (virtualNode string, err error) {
+	//由小到大查找
 	scoreEntity, err := r.redisClient.Ceiling(ctx, r.getRingKey(), dataScore)
 	//发生错误
-	if err != nil && !errors.Is(err, ErrScoreNotExist) {
+	if err != nil {
 		return "", err
 	}
-	hashScore := csHash.HashScore{}
+	var virtualNodes []string
 	//找到了数据
 	if scoreEntity != nil {
-
-		if err := json.Unmarshal([]byte(scoreEntity.Val), &hashScore); err != nil {
+		if err := json.Unmarshal([]byte(scoreEntity.Val), &virtualNodes); err != nil {
 			return "", err
 		}
-		return hashScore.VirtualNodes[0].VirtualNodeID, nil
+		return virtualNodes[0], nil
 	}
-	//寻找第一个score节点数据
+
+	// dataScore 为最大节点，他的下一个节点为第一个节点
 	scoreEntity, err = r.redisClient.FirstOrLast(ctx, r.getRingKey(), true)
 	if err != nil {
-		if errors.Is(err, ErrScoreNotExist) {
-			//节点不存在
-			return "", csHash.ErrVirtualNodeNotExists
-		} else {
-			return "", err
-		}
-	}
-	if err := json.Unmarshal([]byte(scoreEntity.Val), &hashScore); err != nil {
 		return "", err
 	}
-	return hashScore.VirtualNodes[0].VirtualNodeID, nil
+	if scoreEntity != nil {
+		if err := json.Unmarshal([]byte(scoreEntity.Val), &virtualNodes); err != nil {
+			return "", err
+		}
+		return virtualNodes[0], nil
+	}
+	return "", nil
 }
 
 func (r *RedisHashRing) AddRealNode(ctx context.Context, nodeName string, replicas int64) (err error) {
@@ -210,11 +176,11 @@ func (r *RedisHashRing) GetRealNodes(ctx context.Context) (nodes map[string]int6
 }
 
 func (r *RedisHashRing) GetRealNode(ctx context.Context, nodeName string) (replicas int64, err error) {
-	nodes, err := r.GetRealNodes(ctx)
+	num, err := r.redisClient.HGet(ctx, r.getNodeReplicaKey(), nodeName)
 	if err != nil {
 		return 0, err
 	}
-	return nodes[nodeName], nil
+	return gocast.ToInt64(num), nil
 }
 
 func (r *RedisHashRing) RemoveRealNode(ctx context.Context, nodeName string) (err error) {
@@ -224,14 +190,97 @@ func (r *RedisHashRing) RemoveRealNode(ctx context.Context, nodeName string) (er
 	return nil
 }
 
-func (r *RedisHashRing) GetVersion(ctx context.Context) (version int64, err error) {
-	versionStr, err := r.redisClient.Get(ctx, r.getTableVersionKey())
+func (r *RedisHashRing) AddDataToRealNode(ctx context.Context, RealNode string, data map[string]struct{}) error {
+	tmp, err := r.GetDataFromRealNode(ctx, RealNode)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	return gocast.ToInt64(versionStr), nil
+	for k := range data {
+		tmp[k] = struct{}{}
+	}
+	bytes, err := json.Marshal(tmp)
+	return r.redisClient.Set(ctx, r.getNodeDataKey(RealNode), string(bytes))
 }
 
-func (r *RedisHashRing) SetVersion(ctx context.Context, version int64) (err error) {
-	return r.redisClient.Set(ctx, r.getTableVersionKey(), fmt.Sprintf("%v", r.version))
+func (r *RedisHashRing) GetDataFromRealNode(ctx context.Context, RealNode string) (data map[string]struct{}, err error) {
+	str, err := r.redisClient.Get(ctx, r.getNodeDataKey(RealNode))
+	tmp := make(map[string]struct{})
+	if str != "" {
+		if err := json.Unmarshal([]byte(str), &tmp); err != nil {
+			return nil, err
+		}
+	}
+	return tmp, nil
+}
+
+func (r *RedisHashRing) RemoveDataFromRealNode(ctx context.Context, RealNode string, data map[string]struct{}) error {
+	tmp, err := r.GetDataFromRealNode(ctx, RealNode)
+	if err != nil {
+		return err
+	}
+	for k := range data {
+		delete(tmp, k)
+	}
+	bytes, err := json.Marshal(tmp)
+	return r.redisClient.Set(ctx, r.getNodeDataKey(RealNode), string(bytes))
+}
+
+// Floor 查找hashRing 的 score前面的第一个节点，不包括score
+// 如果只有一个节点 == score， 返回当前score
+func (r *RedisHashRing) Floor(ctx context.Context, score int64) (string, int64, error) {
+	scoreEntity, err := r.redisClient.Floor(ctx, r.getRingKey(), score)
+	if err != nil {
+		return "", -1, err
+	}
+	if scoreEntity != nil {
+		var virtualNodes []string
+		if err := json.Unmarshal([]byte(scoreEntity.Val), &virtualNodes); err != nil {
+			return "", -1, err
+		}
+		return virtualNodes[0], scoreEntity.Score, nil
+	}
+	//往前找没有，需要寻找最后一个节点
+	scoreEntity, err = r.redisClient.FirstOrLast(ctx, r.getRingKey(), false)
+	if err != nil {
+		return "", -1, err
+	}
+	if scoreEntity == nil {
+		return "", -1, nil
+	}
+
+	var virtualNodes []string
+	if err := json.Unmarshal([]byte(scoreEntity.Val), &virtualNodes); err != nil {
+		return "", -1, err
+	}
+	return virtualNodes[0], scoreEntity.Score, nil
+}
+
+// Ceiling 查找hashRing 的 score 后面的第一个节点，不包括score
+// 如果只有一个节点 == score， 返回当前score
+func (r *RedisHashRing) Ceiling(ctx context.Context, score int64) (string, int64, error) {
+	scoreEntity, err := r.redisClient.Ceiling(ctx, r.getRingKey(), score)
+	if err != nil {
+		return "", -1, err
+	}
+	if scoreEntity != nil {
+		var virtualNodes []string
+		if err := json.Unmarshal([]byte(scoreEntity.Val), &virtualNodes); err != nil {
+			return "", -1, err
+		}
+		return virtualNodes[0], scoreEntity.Score, nil
+	}
+	//往前找没有，需要寻找第一个节点
+	scoreEntity, err = r.redisClient.FirstOrLast(ctx, r.getRingKey(), true)
+	if err != nil {
+		return "", -1, err
+	}
+	if scoreEntity == nil {
+		return "", -1, nil
+	}
+
+	var virtualNodes []string
+	if err := json.Unmarshal([]byte(scoreEntity.Val), &virtualNodes); err != nil {
+		return "", -1, err
+	}
+	return virtualNodes[0], scoreEntity.Score, nil
 }

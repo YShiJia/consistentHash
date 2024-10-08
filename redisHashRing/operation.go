@@ -17,8 +17,6 @@ import (
 	"github.com/gomodule/redigo/redis"
 )
 
-var ErrScoreNotExist = errors.New("score not exist")
-
 // Client Redis 客户端.
 type Client struct {
 	opts *ClientOptions
@@ -140,13 +138,16 @@ func (c *Client) Ceiling(ctx context.Context, table string, score int64) (*Score
 	}
 	defer conn.Close()
 
-	raws, err := redis.Values(conn.Do("ZRANGE", table, score, "+inf", "BYSCORE", "LIMIT", 0, 1, "WITHSCORES"))
+	// 空集合不报错
+	raws, err := redis.Values(conn.Do("ZRANGEBYSCORE", table, score, "+inf", "LIMIT", 1, 1, "WITHSCORES"))
 	if err != nil {
 		return nil, err
 	}
-
+	if len(raws) == 0 {
+		return nil, nil
+	}
 	if len(raws) != 2 {
-		return nil, fmt.Errorf("invalid len of entity: %d, err: %w", len(raws), ErrScoreNotExist)
+		return nil, fmt.Errorf("invalid len of entity: %d", len(raws))
 	}
 
 	return &ScoreEntity{
@@ -163,13 +164,17 @@ func (c *Client) Floor(ctx context.Context, table string, score int64) (*ScoreEn
 	}
 	defer conn.Close()
 
-	raws, err := redis.Values(conn.Do("ZRANGE", table, score, "-inf", "REV", "BYSCORE", "LIMIT", 0, 1, "WITHSCORES"))
+	raws, err := redis.Values(conn.Do("ZREVRANGEBYSCORE", table, score, "-inf", "LIMIT", 1, 1, "WITHSCORES"))
 	if err != nil {
 		return nil, err
 	}
 
+	if len(raws) == 0 {
+		return nil, nil
+	}
+
 	if len(raws) != 2 {
-		return nil, fmt.Errorf("invalid len of entity: %d, err: %w", len(raws), ErrScoreNotExist)
+		return nil, fmt.Errorf("invalid len of entity: %d", len(raws))
 	}
 
 	return &ScoreEntity{
@@ -188,17 +193,21 @@ func (c *Client) FirstOrLast(ctx context.Context, table string, first bool) (*Sc
 	var raws []interface{}
 	//这种方式简洁明了，使用条件append反而增加了复杂性
 	if first {
-		raws, err = redis.Values(conn.Do("ZRANGE", table, "-inf", "+inf", "BYSCORE", "LIMIT", 0, 1, "WITHSCORES"))
+		raws, err = redis.Values(conn.Do("ZRANGEBYSCORE", table, "-inf", "+inf", "LIMIT", 0, 1, "WITHSCORES"))
 	} else {
-		raws, err = redis.Values(conn.Do("ZRANGE", table, "+inf", "-inf", "REV", "BYSCORE", "LIMIT", 0, 1, "WITHSCORES"))
+		raws, err = redis.Values(conn.Do("ZREVRANGEBYSCORE", table, "+inf", "-inf", "LIMIT", 0, 1, "WITHSCORES"))
 	}
-
 	if err != nil {
 		return nil, err
 	}
+
+	if len(raws) == 0 {
+		return nil, nil
+	}
+
 	//只返回一条数据
 	if len(raws) != 2 {
-		return nil, fmt.Errorf("invalid len of entity: %d, err: %w", len(raws), ErrScoreNotExist)
+		return nil, fmt.Errorf("invalid len of entity: %d", len(raws))
 	}
 
 	return &ScoreEntity{
@@ -227,6 +236,19 @@ func (c *Client) HSet(ctx context.Context, table, key, val string) error {
 	defer conn.Close()
 	_, err = conn.Do("HSET", table, key, val)
 	return err
+}
+
+func (c *Client) HGet(ctx context.Context, table, key string) (string, error) {
+	conn, err := c.pool.GetContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	value, err := redis.String(conn.Do("Hget", table, key))
+	if err != nil {
+		return "", err
+	}
+	return value, nil
 }
 
 // 获取哈希表table的所有kv

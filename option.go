@@ -13,8 +13,6 @@ type ConsistentHashOptions struct {
 	lockExpireSeconds int64
 	//副本数量
 	replicas int64
-	//日志级别
-	loggerLevel LoggerLevel
 }
 
 // lockExpireSeconds 锁的过期时间，单位秒, 默认15秒

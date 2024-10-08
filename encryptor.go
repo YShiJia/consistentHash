@@ -26,5 +26,5 @@ func NewMurmurHasher32() *murmurHasher32 {
 func (m *murmurHasher32) Encrypt(origin string) int32 {
 	hasher := murmur3.New32()
 	_, _ = hasher.Write([]byte(origin))
-	return int32(hasher.Sum32() % math.MaxInt32)
+	return int32(hasher.Sum32() % (math.MaxInt32 + 1))
 }
