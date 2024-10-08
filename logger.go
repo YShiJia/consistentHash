@@ -9,6 +9,5 @@ package csHash
 type Logger interface {
 	Debug(...any)
 	Info(...any)
-	Warn(...any)
 	Error(...any)
 }
